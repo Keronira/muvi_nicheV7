@@ -45,9 +45,8 @@ from src.utils import (
 
 
 def ensure_scanpy_spatial_plot_metadata(adata) -> None:
-    # sc.pl.spatial expects uns["spatial"] to be a library-id dictionary with
-    # scalefactors. Some non-Visium h5ad files carry a scalar or malformed
-    # "spatial" entry, which breaks plotting even with img_key=None.
+    if "spatial" in adata.uns:
+        return
     adata.uns["spatial"] = {
         "muvi_niche_v7": {
             "images": {},
