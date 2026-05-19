@@ -1,0 +1,126 @@
+seed: 1234
+
+paths:
+  input_h5ad: "data/200727_08.h5ad"
+  output_dir: "muvi_niche_v7/outputs"
+
+bench:
+  dataset_name: "default_dataset"
+  sample_name: "default_sample"
+  method_name: "MuViNiche_v7_learnable_rareq"
+  bench_root: "bench_results"
+
+data:
+  label_key: "annotation_final"
+  library_id: null
+  species: "human"
+
+preprocessing:
+  filter_genes: false
+  min_cells: 3
+  min_genes: 200
+  normalize_total: true
+  target_sum: 10000.0
+  ensure_log1p: true
+  n_top_genes: 5000
+  hvg_flavor: "seurat"
+  spatial_neighbors: 30
+  use_existing_spatial_key: true
+
+training_mode:
+  mode: "single_slice"
+  batch_key: "slice_id"
+  original_obs_key: "original_spot_id"
+
+prototype_learning:
+  enabled: true
+  num_prototypes: null
+  temperature: 0.2
+  obs_key: "common_niche"
+  prob_key: "X_common_niche_prob"
+  distance_key: "X_common_niche_distance"
+
+graph_construction:
+  self_pca_dim: 80
+  scales:
+    - 8
+    - 15
+    - 30
+  num_directions: 8
+  neighbors_per_direction: 4
+  spatial_connectivity_k: 30
+  radius_quantile: 0.75
+  radius_multipliers:
+    8: 2.2
+    15: 3.5
+    30: 5.0
+  min_valid_neighbors_for_pool: 1
+  edge_similarity_temperature: 0.25
+  min_edge_weight: 0.05
+
+model:
+  architecture: "directional_lp_learnable_rareq"
+  hidden_dim: 96
+  embedding_dim: 64
+  num_layers: 4
+  num_directions: 8
+  neighbors_per_direction: 4
+  scales:
+    - 8
+    - 15
+    - 30
+  dropout: 0.08
+  edge_attr_dim: 5
+  rareq:
+    enabled: true
+    input_key: "X_self"
+    feature_knn_k: 20
+    q_neighbors: 6
+    hidden_dim: 96
+    attention_heads: 4
+    rare_dropout: 0.20
+    attention_dropout: 0.20
+    token_dropout: 0.20
+    score_temperature: 0.2
+    metric: "cosine"
+
+training:
+  epochs: 160
+  print_interval: 10
+  early_stopping_patience: 24
+  early_stopping_min_delta: 0.0001
+  lr: 0.001
+  weight_decay: 0.0001
+  mask_rate: 0.2
+  grad_clip: 5.0
+  reconstruction_weight: 1.5
+  neighbor_reconstruction_weight: 0.0
+  directional_continuity_weight: 0.15
+  boundary_preservation_weight: 0.7
+  rare_consistency_weight: 0.0
+  variance_weight: 0.0
+  use_density_weighting: true
+  similarity_positive_threshold: 0.55
+  boundary_negative_threshold: 0.45
+  variance_target_std: 1.0
+  lr_scheduler:
+    enabled: true
+    type: "reduce_on_plateau"
+    factor: 0.5
+    patience: 12
+    threshold: 0.0001
+    min_lr: 0.00005
+  cluster_key: "kmeans_smvr"
+  kmeans_clusters: null
+  embedding_key: "X_smvr"
+  consensus_adj_key: "smvr_consensus_adj"
+
+plotting:
+  plot_loss_curve: true
+
+outputs:
+  save_final_adata: false
+  final_adata_name: "adata_final.h5ad"
+  best_graphs_name: "graphs_best.pt"
+  checkpoint_name: "best_model.pt"
+  loss_curve_name: "loss_epoch_curve.png"
