@@ -62,7 +62,7 @@ def ensure_scanpy_spatial_plot_metadata(adata) -> None:
 def parse_args():
     parser = build_parser(
         "muvi_niche_v7_learnable_rareq",
-        "Run muvi_niche_v7 learnable RareQ directional local pooling on .h5ad files.",
+        "Run muvi_niche_v7 unsupervised structural directional local pooling on .h5ad files.",
         WORKSPACE_ROOT,
     )
     parser.add_argument(
@@ -156,7 +156,8 @@ def format_loss_weight_annotation(config: dict) -> str:
         ("recon", "reconstruction_weight"),
         ("dir", "directional_continuity_weight"),
         ("bnd", "boundary_preservation_weight"),
-        ("rare", "rare_consistency_weight"),
+        ("dist", "distance_preservation_weight"),
+        ("small", "small_direction_continuity_weight"),
     ]
     loss_text = "Loss weights: " + ", ".join(
         f"{label}={float(training.get(key, 0.0)):.3g}" for label, key in keys
