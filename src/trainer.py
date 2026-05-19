@@ -35,7 +35,8 @@ def _plot_training_curve(loss_history, lr_reductions, output_dir: Path, config: 
         ("reconstruction_loss", "Self recon"),
         ("directional_continuity_loss", "Directional"),
         ("boundary_preservation_loss", "Boundary"),
-        ("rare_consistency_loss", "Rare"),
+        ("distance_preservation_loss", "Distance"),
+        ("small_direction_continuity_loss", "Small dir"),
     ]
     for key, label in components:
         axes[1].plot(epochs, [item[key] for item in loss_history], label=label)
@@ -161,6 +162,45 @@ def _boundary_preservation_loss(z, batch, scales: list[int], threshold: float):
     return (F.relu(margin - dist) * weight).sum() / weight.sum().clamp_min(1e-6)
 
 
+def _normalize_vector(values: torch.Tensor) -> torch.Tensor:
+    if values.numel() == 0:
+        return values
+    mean = values.mean()
+    std = values.std().clamp_min(1e-6)
+    return (values - mean) / std
+
+
+def _boundary_aware_distance_preservation_loss(outputs, batch, scales: list[int], use_density: bool):
+    src, dst, weight = _directional_pairs(batch, scales, use_density=use_density)
+    if src.numel() == 0:
+        return outputs["z_final"].new_tensor(0.0)
+    z = outputs["z_final"]
+    x_self = batch["X_self"]
+    embed_dist = (z[src] - z[dst]).pow(2).sum(dim=1).sqrt()
+    expr_dist = (x_self[src] - x_self[dst]).pow(2).sum(dim=1).sqrt()
+    keep = weight > 0
+    if not keep.any():
+        return z.new_tensor(0.0)
+    embed_norm = _normalize_vector(embed_dist[keep])
+    expr_norm = _normalize_vector(expr_dist[keep])
+    w = weight[keep].clamp_min(0.0)
+    return ((embed_norm - expr_norm).pow(2) * w).sum() / w.sum().clamp_min(1e-6)
+
+
+def _small_direction_continuity_loss(outputs, batch, scales: list[int], use_density: bool):
+    if "small_gate" not in outputs:
+        return outputs["z_final"].new_tensor(0.0)
+    src, dst, weight = _directional_pairs(batch, scales, use_density=use_density)
+    if src.numel() == 0:
+        return outputs["z_final"].new_tensor(0.0)
+    small_gate = outputs["small_gate"]
+    small_weight = weight * small_gate[src] * small_gate[dst]
+    keep = small_weight > 0
+    if not keep.any():
+        return outputs["z_final"].new_tensor(0.0)
+    return _weighted_pair_distance(outputs["z_final"], src[keep], dst[keep], small_weight[keep])
+
+
 def _rare_consistency_loss(outputs, batch, config):
     if "rare_score" not in outputs:
         return outputs["z_final"].new_tensor(0.0)
@@ -207,13 +247,17 @@ def compute_v7_loss(outputs, batch, config):
         threshold=float(training_cfg.get("boundary_negative_threshold", 0.45)),
     )
     rare_loss = _rare_consistency_loss(outputs, batch, config)
+    distance_loss = _boundary_aware_distance_preservation_loss(outputs, batch, scales, use_density=use_density)
+    small_dir_loss = _small_direction_continuity_loss(outputs, batch, scales, use_density=use_density)
     total = (
         float(training_cfg.get("reconstruction_weight", 1.0)) * recon_loss
         + float(training_cfg.get("directional_continuity_weight", 0.3)) * directional_loss
         + float(training_cfg.get("boundary_preservation_weight", 0.3)) * boundary_loss
         + float(training_cfg.get("rare_consistency_weight", 0.0)) * rare_loss
+        + float(training_cfg.get("distance_preservation_weight", 0.25)) * distance_loss
+        + float(training_cfg.get("small_direction_continuity_weight", 0.20)) * small_dir_loss
     )
-    return total, recon_loss, directional_loss, boundary_loss, rare_loss
+    return total, recon_loss, directional_loss, boundary_loss, rare_loss, distance_loss, small_dir_loss
 
 
 def run_training_pipeline(adata, graphs_best, config, output_dir):
@@ -238,6 +282,7 @@ def run_training_pipeline(adata, graphs_best, config, output_dir):
         edge_attr_dim=int(model_cfg.get("edge_attr_dim", 5)),
         dropout=float(model_cfg.get("dropout", 0.08)),
         rareq=model_cfg.get("rareq", {}),
+        small_gate=model_cfg.get("small_gate", {}),
     ).to(device)
     print(
         f"[muvi_niche_v7] model initialized: encoder={architecture}, "
@@ -275,7 +320,15 @@ def run_training_pipeline(adata, graphs_best, config, output_dir):
         model.train()
         optimizer.zero_grad()
         outputs = model(batch, mask_rate=float(training_cfg.get("mask_rate", 0.2)))
-        loss, loss_recon, loss_dir, loss_boundary, loss_rare = compute_v7_loss(outputs, batch, config)
+        (
+            loss,
+            loss_recon,
+            loss_dir,
+            loss_boundary,
+            loss_rare,
+            loss_distance,
+            loss_small_dir,
+        ) = compute_v7_loss(outputs, batch, config)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), float(training_cfg.get("grad_clip", 5.0)))
         optimizer.step()
@@ -304,6 +357,8 @@ def run_training_pipeline(adata, graphs_best, config, output_dir):
                 "directional_continuity_loss": float(loss_dir.item()),
                 "boundary_preservation_loss": float(loss_boundary.item()),
                 "rare_consistency_loss": float(loss_rare.item()),
+                "distance_preservation_loss": float(loss_distance.item()),
+                "small_direction_continuity_loss": float(loss_small_dir.item()),
                 "lr": float(current_lr),
             }
         )
@@ -331,6 +386,8 @@ def run_training_pipeline(adata, graphs_best, config, output_dir):
     scale_weights = outputs["scale_weights"].detach().cpu().numpy()
     adata.obsm["X_v7_scale_weights"] = scale_weights.reshape(scale_weights.shape[0], -1)
     adata.obsm["X_v7_boundary_gate"] = outputs["boundary_gate"].detach().cpu().numpy()
+    adata.obsm["X_v7_small_gate"] = outputs["small_gate"].detach().cpu().numpy().reshape(-1, 1)
+    adata.obs["X_v7_small_gate"] = outputs["small_gate"].detach().cpu().numpy()
     if "rare_score" in outputs:
         adata.obsm["X_v7_rare_score"] = outputs["rare_score"].detach().cpu().numpy().reshape(-1, 1)
         adata.obs["X_v7_rare_score"] = outputs["rare_score"].detach().cpu().numpy()
@@ -354,6 +411,8 @@ def run_training_pipeline(adata, graphs_best, config, output_dir):
         "directional_continuity": float(training_cfg.get("directional_continuity_weight", 0.3)),
         "boundary_preservation": float(training_cfg.get("boundary_preservation_weight", 0.3)),
         "rare_consistency": float(training_cfg.get("rare_consistency_weight", 0.0)),
+        "distance_preservation": float(training_cfg.get("distance_preservation_weight", 0.25)),
+        "small_direction_continuity": float(training_cfg.get("small_direction_continuity_weight", 0.20)),
     }
     return {
         "adata": adata,

@@ -214,11 +214,14 @@ class DirectionalMultiScaleLPEncoder(nn.Module):
         edge_attr_dim: int = 5,
         dropout: float = 0.08,
         rareq: dict | None = None,
+        small_gate: dict | None = None,
     ):
         super().__init__()
         self.scales = [int(scale) for scale in scales]
         self.rareq_cfg = rareq or {}
         self.use_rareq = bool(self.rareq_cfg.get("enabled", False))
+        self.small_gate_cfg = small_gate or {}
+        self.use_small_gate = bool(self.small_gate_cfg.get("enabled", True))
         self.mask_token = nn.Parameter(torch.zeros(1, self_dim))
         self.self_projector = _mlp(self_dim, hidden_dim, hidden_dim, dropout)
         self.boundary_projector = _mlp(boundary_dim, hidden_dim, hidden_dim, dropout)
@@ -257,6 +260,17 @@ class DirectionalMultiScaleLPEncoder(nn.Module):
             nn.GELU(),
             nn.Linear(hidden_dim, embedding_dim),
         )
+        if self.use_small_gate:
+            small_hidden = int(self.small_gate_cfg.get("hidden_dim", 64))
+            small_dropout = float(self.small_gate_cfg.get("dropout", dropout))
+            self.small_gate_head = nn.Sequential(
+                nn.Linear(embedding_dim + 1, small_hidden),
+                nn.GELU(),
+                nn.Dropout(small_dropout),
+                nn.Linear(small_hidden, 1),
+            )
+        else:
+            self.small_gate_head = None
         self.self_decoder = nn.Sequential(nn.Linear(embedding_dim, hidden_dim), nn.GELU(), nn.Linear(hidden_dim, self_dim))
         self.neighbor_decoders = nn.ModuleDict(
             {str(scale): nn.Sequential(nn.Linear(embedding_dim, hidden_dim), nn.GELU(), nn.Linear(hidden_dim, self_dim)) for scale in self.scales}
@@ -311,6 +325,11 @@ class DirectionalMultiScaleLPEncoder(nn.Module):
         z_global = self.global_head(h)
         z_local = self.local_head(h)
         z_final = F.layer_norm(self.final_head(torch.cat([z_global, z_local, h_self], dim=1)), (z_global.shape[1],))
+        boundary_gate = torch.stack([item["boundary_gate"] for item in diag_history], dim=1).mean(dim=1)
+        if self.use_small_gate:
+            small_gate = torch.sigmoid(self.small_gate_head(torch.cat([z_final, boundary_gate], dim=1))).squeeze(-1)
+        else:
+            small_gate = torch.zeros(z_final.shape[0], dtype=z_final.dtype, device=z_final.device)
         out = {
             "z_final": z_final,
             "z_global": z_global,
@@ -321,7 +340,8 @@ class DirectionalMultiScaleLPEncoder(nn.Module):
             "view_weights": view_weights,
             "direction_weights": torch.stack([item["direction_weights"] for item in diag_history], dim=1),
             "scale_weights": torch.stack([item["scale_weights"] for item in diag_history], dim=1),
-            "boundary_gate": torch.stack([item["boundary_gate"] for item in diag_history], dim=1).mean(dim=1),
+            "boundary_gate": boundary_gate,
+            "small_gate": small_gate,
         }
         if rare_outputs is not None:
             out.update(

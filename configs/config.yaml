@@ -72,7 +72,7 @@ model:
   dropout: 0.08
   edge_attr_dim: 5
   rareq:
-    enabled: true
+    enabled: false
     input_key: "X_self"
     feature_knn_k: 20
     q_neighbors: 6
@@ -83,6 +83,10 @@ model:
     token_dropout: 0.20
     score_temperature: 0.2
     metric: "cosine"
+  small_gate:
+    enabled: true
+    hidden_dim: 64
+    dropout: 0.08
 
 training:
   epochs: 160
@@ -98,6 +102,8 @@ training:
   directional_continuity_weight: 0.15
   boundary_preservation_weight: 0.7
   rare_consistency_weight: 0.0
+  distance_preservation_weight: 0.25
+  small_direction_continuity_weight: 0.20
   variance_weight: 0.0
   use_density_weighting: true
   similarity_positive_threshold: 0.55

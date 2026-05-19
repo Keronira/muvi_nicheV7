@@ -42,6 +42,8 @@ def loss_overrides(
     direction: float = 0.15,
     boundary: float = 0.7,
     rare: float = 0.0,
+    distance: float = 0.25,
+    small: float = 0.20,
 ) -> dict:
     return {
         "training": {
@@ -49,6 +51,8 @@ def loss_overrides(
             "directional_continuity_weight": direction,
             "boundary_preservation_weight": boundary,
             "rare_consistency_weight": rare,
+            "distance_preservation_weight": distance,
+            "small_direction_continuity_weight": small,
             "neighbor_reconstruction_weight": 0.0,
             "variance_weight": 0.0,
         }
@@ -76,9 +80,12 @@ def rareq_overrides(
     }
 
 
-ANCHOR_LOSS = loss_overrides(recon=1.5, direction=0.15, boundary=0.7, rare=0.0)
+ANCHOR_LOSS = loss_overrides(recon=1.5, direction=0.15, boundary=0.7, rare=0.0, distance=0.25, small=0.20)
 ANCHOR_RAREQ = rareq_overrides(rare_dropout=0.20, attention_dropout=0.20, token_dropout=0.20, k=20, q=6)
-ANCHOR_OVERRIDES = deep_update(ANCHOR_LOSS, ANCHOR_RAREQ)
+ANCHOR_OVERRIDES = deep_update(
+    deep_update(ANCHOR_LOSS, ANCHOR_RAREQ),
+    {"model": {"rareq": {"enabled": False}, "small_gate": {"enabled": True, "hidden_dim": 64, "dropout": 0.08}}},
+)
 
 
 def anchored_loss(
@@ -87,10 +94,19 @@ def anchored_loss(
     direction: float = 0.15,
     boundary: float = 0.7,
     rare: float = 0.0,
+    distance: float = 0.25,
+    small: float = 0.20,
 ) -> dict:
     return deep_update(
-        ANCHOR_RAREQ,
-        loss_overrides(recon=recon, direction=direction, boundary=boundary, rare=rare),
+        ANCHOR_OVERRIDES,
+        loss_overrides(
+            recon=recon,
+            direction=direction,
+            boundary=boundary,
+            rare=rare,
+            distance=distance,
+            small=small,
+        ),
     )
 
 
@@ -117,75 +133,30 @@ def anchored_rareq(
 def variant_catalog() -> dict[str, Variant]:
     anchor = Variant(
         "anchor",
-        "New v7 anchor: recon=1.5, dir=0.15, boundary=0.7, rare=0, RareQ k=20 q=6 dropout=0.2.",
+        "Unsupervised v7 anchor: RareQ off, recon=1.5, dir=0.15, boundary=0.7, distance=0.25, small=0.20.",
         ANCHOR_OVERRIDES,
     )
     variants = [
         anchor,
-        Variant("rare_005", "Turn on very weak rare consistency from the new anchor.", anchored_loss(rare=0.05)),
-        Variant("rare_010", "Turn on weak rare consistency from the new anchor.", anchored_loss(rare=0.10)),
-        Variant("rare_020", "Turn on moderate rare consistency from the new anchor.", anchored_loss(rare=0.20)),
-        Variant("rare_030", "Stress rare consistency while keeping the new anchor otherwise fixed.", anchored_loss(rare=0.30)),
-        Variant("recon_13", "Slightly reduce self reconstruction from anchor.", anchored_loss(recon=1.30)),
-        Variant("recon_17", "Slightly increase self reconstruction from anchor.", anchored_loss(recon=1.70)),
-        Variant("dir_010", "Weaker directional continuity than anchor.", anchored_loss(direction=0.10)),
-        Variant("dir_020", "Stronger directional continuity than anchor.", anchored_loss(direction=0.20)),
-        Variant("bnd_05", "Weaker boundary preservation than anchor.", anchored_loss(boundary=0.50)),
-        Variant("bnd_09", "Stronger boundary preservation than anchor.", anchored_loss(boundary=0.90)),
+        Variant("distance_off", "Ablate boundary-aware distance preservation.", anchored_loss(distance=0.0)),
+        Variant("distance_low", "Lower boundary-aware distance preservation.", anchored_loss(distance=0.10)),
+        Variant("distance_high", "Higher boundary-aware distance preservation.", anchored_loss(distance=0.40)),
+        Variant("small_off", "Ablate small direction continuity.", anchored_loss(small=0.0)),
+        Variant("small_low", "Lower small direction continuity.", anchored_loss(small=0.10)),
+        Variant("small_high", "Higher small direction continuity.", anchored_loss(small=0.35)),
+        Variant("dir_012", "Slightly weaker directional continuity than anchor.", anchored_loss(direction=0.12)),
+        Variant("dir_018", "Slightly stronger directional continuity than anchor.", anchored_loss(direction=0.18)),
+        Variant("bnd_06", "Slightly weaker boundary preservation than anchor.", anchored_loss(boundary=0.60)),
+        Variant("bnd_08", "Slightly stronger boundary preservation than anchor.", anchored_loss(boundary=0.80)),
         Variant(
-            "rare010_bnd09",
-            "Weak rare consistency with stronger boundary preservation.",
-            anchored_loss(boundary=0.90, rare=0.10),
-        ),
-        Variant(
-            "rare010_dir010",
-            "Weak rare consistency with weaker directional smoothing.",
-            anchored_loss(direction=0.10, rare=0.10),
+            "rareq_token_on",
+            "Turn RareQ token back on while keeping rare consistency off.",
+            deep_update(ANCHOR_OVERRIDES, {"model": {"rareq": {"enabled": True}}}),
         ),
         Variant(
             "balanced_local",
-            "Local best-guess around anchor: slightly lower direction, stronger boundary, weak rare.",
-            anchored_loss(recon=1.50, direction=0.10, boundary=0.90, rare=0.10),
-        ),
-        Variant(
-            "self_rare_local",
-            "Higher self reconstruction plus weak rare consistency.",
-            anchored_loss(recon=1.70, direction=0.10, boundary=0.70, rare=0.10),
-        ),
-        Variant(
-            "dropout_low",
-            "Lower RareQ dropout around the new anchor.",
-            anchored_rareq(rare_dropout=0.10, attention_dropout=0.10, token_dropout=0.10),
-        ),
-        Variant(
-            "dropout_high",
-            "Higher RareQ dropout around the new anchor.",
-            anchored_rareq(rare_dropout=0.30, attention_dropout=0.30, token_dropout=0.30),
-        ),
-        Variant(
-            "dropout_rare010",
-            "Anchor dropout with weak rare consistency enabled.",
-            anchored_loss(rare=0.10),
-        ),
-        Variant(
-            "rareq_k12_q4",
-            "Smaller feature-space RareQ neighborhood around anchor.",
-            anchored_rareq(k=12, q=4),
-        ),
-        Variant(
-            "rareq_k30_q8",
-            "Larger feature-space RareQ neighborhood around anchor.",
-            anchored_rareq(k=30, q=8),
-        ),
-        Variant(
-            "rareq_k12_q4_rare010",
-            "Smaller RareQ neighborhood with weak rare consistency.",
-            deep_update(anchored_rareq(k=12, q=4), {"training": {"rare_consistency_weight": 0.10}}),
-        ),
-        Variant(
-            "rareq_k30_q8_rare010",
-            "Larger RareQ neighborhood with weak rare consistency.",
-            deep_update(anchored_rareq(k=30, q=8), {"training": {"rare_consistency_weight": 0.10}}),
+            "Local best guess: weaker direction, stronger boundary, moderate distance and small continuity.",
+            anchored_loss(direction=0.12, boundary=0.80, distance=0.25, small=0.20),
         ),
     ]
     return {variant.name: variant for variant in variants}
@@ -194,30 +165,34 @@ def variant_catalog() -> dict[str, Variant]:
 def default_variant_names(variant_set: str) -> list[str]:
     core = [
         "anchor",
-        "rare_005",
-        "rare_010",
-        "rare_020",
-        "rare_030",
-        "recon_13",
-        "recon_17",
-        "dir_010",
-        "dir_020",
-        "bnd_05",
-        "bnd_09",
-        "rare010_bnd09",
-        "rare010_dir010",
+        "distance_off",
+        "distance_low",
+        "distance_high",
+        "small_off",
+        "small_low",
+        "small_high",
+        "dir_012",
+        "dir_018",
+        "bnd_06",
+        "bnd_08",
+        "rareq_token_on",
         "balanced_local",
-        "self_rare_local",
     ]
-    dropout = ["dropout_low", "dropout_high", "dropout_rare010"]
-    graph = ["rareq_k12_q4", "rareq_k30_q8", "rareq_k12_q4_rare010", "rareq_k30_q8_rare010"]
+    dropout = ["anchor", "rareq_token_on"]
+    graph = ["anchor", "rareq_token_on"]
     if variant_set == "core":
         return core
     if variant_set == "dropout":
         return ["anchor", *dropout]
     if variant_set == "graph":
         return ["anchor", *graph]
-    return [*core, *dropout, *graph]
+    seen = set()
+    names = []
+    for name in [*core, *dropout, *graph]:
+        if name not in seen:
+            names.append(name)
+            seen.add(name)
+    return names
 
 
 def parse_args() -> argparse.Namespace:
